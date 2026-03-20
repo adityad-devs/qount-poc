@@ -1,0 +1,51 @@
+name: Transition JIRA ticket to Done on PR merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+jobs:
+  transition-jira:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract JIRA ticket ID from PR description
+        id: extract
+        run: |
+          PR_BODY="${{ github.event.pull_request.body }}"
+          TICKET_ID=$(echo "$PR_BODY" | grep -oP 'TICKET_ID:\s*\K[A-Z]+-[0-9]+')
+          echo "ticket_id=$TICKET_ID" >> $GITHUB_OUTPUT
+          echo "Found ticket: $TICKET_ID"
+
+      - name: Get JIRA transition ID for Done status
+        id: get_transition
+        run: |
+          RESPONSE=$(curl -s \
+            -u "${{ secrets.JIRA_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            "${{ secrets.JIRA_BASE_URL }}/rest/api/3/issue/${{ steps.extract.outputs.ticket_id }}/transitions")
+          echo "Transitions: $RESPONSE"
+          TRANSITION_ID=$(echo $RESPONSE | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          transitions = data.get('transitions', [])
+          for t in transitions:
+              if t['name'].lower() == 'done':
+                  print(t['id'])
+                  break
+          ")
+          echo "transition_id=$TRANSITION_ID" >> $GITHUB_OUTPUT
+          echo "Transition ID: $TRANSITION_ID"
+
+      - name: Move JIRA ticket to Done
+        run: |
+          curl -s \
+            -u "${{ secrets.JIRA_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "${{ secrets.JIRA_BASE_URL }}/rest/api/3/issue/${{ steps.extract.outputs.ticket_id }}/transitions" \
+            -d "{\"transition\": {\"id\": \"${{ steps.get_transition.outputs.transition_id }}\"}}"
+          echo "Ticket ${{ steps.extract.outputs.ticket_id }} moved to Done"
